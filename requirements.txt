@@ -1,0 +1,4 @@
+pyhamtools==0.7.7
+PyQt5==5.15.6
+PyYAML==6.0
+requests==2.25.1
