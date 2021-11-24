@@ -12,31 +12,44 @@ from PyQt5.QtCore import QTime, QTimer, QDate, Qt, QDateTime
 
 from pyhamtools.locator import calculate_distance, latlong_to_locator
 
-version = 0.3
+from funcs import export
+from funcs import table
 
+version = 0.4
 
 # , Ui_MainWindow
 class MyWidget(QMainWindow, Ui_MainWindow):
     def __init__(self):
         super().__init__()
         self.setupUi(self)
-
+        
+        self.version = version
+        settings = {"callsign": "", "locator": "", 
+                    "eqsl_user": "", "eqsl_pswd": ""}
+        
         # Загружаем файл конфигурации, если нет - создаём новый
         try:
             with open("settings.yml", "r") as f:
-                settings = yaml.safe_load(f)
+                s = yaml.safe_load(f)
+                if set(s) != set(settings):
+                    raise BaseException
+                settings = s
                 f.close()
-        except IOError:
+        except:
             with open("settings.yml", "w") as f:
                 callsign, ok = QInputDialog().getText(self, "Позывной", "Ваш позывной:")
                 locator, ok = QInputDialog().getText(self, "Локатор", "Ваш локатор:")
-                settings = {"callsign": callsign, "locator": locator}
+                eqsl_user, ok = QInputDialog().getText(self, "Логин на eQSL", "Ваш логин на eQSL:")
+                eqsl_pswd, ok = QInputDialog().getText(self, "Пароль на eQSL", "Ваш пароль на eQSL:")
+                settings = {"callsign": callsign, "locator": locator, 
+                            "eqsl_user": eqsl_user, "eqsl_pswd": eqsl_pswd}
                 yaml.dump(settings, f, default_flow_style=False)
                 f.close()
 
         # Загружаем настройки
         self.my_loc = settings["locator"]
         self.my_call = settings["callsign"]
+        self.settings = settings
         self.edit_flag = False
         self.edit_id = 0
         self.qso_buffer = tuple()
@@ -64,6 +77,7 @@ class MyWidget(QMainWindow, Ui_MainWindow):
 
         # Подключаем пункты меню
         self.actionADIF.triggered.connect(self.to_adif)
+        self.action_eQSL.triggered.connect(self.to_eqsl)
         self.actionClearBase.triggered.connect(self.clear_base)
         self.actionChangeBand.triggered.connect(self.change_band)
         self.actionChangeMode.triggered.connect(self.change_mode)
@@ -97,8 +111,8 @@ class MyWidget(QMainWindow, Ui_MainWindow):
         if self.realTimeCheckBox.isChecked():
             date_time = QDateTime().currentDateTimeUtc()
             time = date_time.time()
-            self.startTimeEdit.setTime(time)
-            self.endTimeEdit.setTime(time.addSecs(60))
+            self.startTimeEdit.setTime(time.addSecs(-60))
+            self.endTimeEdit.setTime(time)
 
             date = date_time.date()
             self.dateEdit.setDate(date)
@@ -228,7 +242,7 @@ class MyWidget(QMainWindow, Ui_MainWindow):
         result = cur.execute(f"""
             SELECT qth, name FROM callsigns
             WHERE callsign = '{self.sender().text()}'""").fetchone()
-        if result:
+        if result and self.sender().text() != "":
             QTHEdits[sender_ind].setText(result[0])
             nameEdits[sender_ind].setText(result[1])
 
@@ -308,88 +322,6 @@ class MyWidget(QMainWindow, Ui_MainWindow):
         # Возвращаем информацию
         return a
 
-    # Контекстное меню
-    def contextMenuEvent(self, event):
-        # Объявляем, добавляем пункты
-        contextMenu = QMenu(self)
-        editAct = contextMenu.addAction("Редактировать")
-        deleteAct = contextMenu.addAction("Удалить")
-        quitAct = contextMenu.addAction("Закрыть меню")
-        action = contextMenu.exec_(self.mapToGlobal(event.pos()))
-        # Если хотим удалить
-        if action == quitAct:
-            pass
-        elif action == deleteAct:
-            # Высчитываем какие записи были выделены
-            rows = list(set([i.row() for i in self.table.selectedItems()]))
-            ids = [self.table.item(i, 0).text() for i in rows]
-
-            # Спрашиваем юзера
-            valid = QMessageBox.question(
-                self, '', "Действительно удалить связи с id " + ",".join(ids),
-                QMessageBox.Yes, QMessageBox.No)
-
-            # Если да, то удаляем
-            if valid == QMessageBox.Yes:
-                cur = self.con.cursor()
-                cur.execute("DELETE FROM qsos WHERE id IN (" + ", ".join(
-                    '?' * len(ids)) + ")", ids)
-                self.con.commit()
-                self.update_table()
-        # Если хотим отредачить
-        elif action == editAct:
-            # Высчитываем айдишник первой выделенной строки
-            row = list(set([i.row() for i in self.table.selectedItems()]))[0]
-            id_ = self.table.item(row, 0).text()
-
-            callsign_1 = self.callsignEdit_1.text().upper()
-            callsign_2 = self.callsignEdit_2.text().upper()
-            RST_1 = self.RSTEdit_1.text()
-            RST_2 = self.RSTEdit_2.text()
-            comment_1 = self.commentEdit_1.text()
-            comment_2 = self.commentEdit_2.text()
-            mode = self.modeBox.currentText()
-            freq = int(self.freqBox.value())
-
-            if not self.edit_flag:
-                self.qso_buffer = (callsign_1, callsign_2, RST_1, RST_2,
-                                   comment_1, comment_2, mode, freq)
-
-            # Подставляем данные в поля
-            cur = self.con.cursor()
-            qso = cur.execute(f"""
-                SELECT *
-                FROM qsos
-                WHERE id = {id_}""").fetchone()
-
-            self.realTimeCheckBox.setChecked(False)
-            call_1 = cur.execute(f"""
-                SELECT callsign
-                FROM callsigns
-                WHERE id = {qso[6]}""").fetchone()[0]
-            call_2 = cur.execute(f"""
-                SELECT callsign
-                FROM callsigns
-                WHERE id = {qso[7]}""").fetchone()[0]
-            self.callsignEdit_1.setText(call_1)
-            self.callsignEdit_2.setText(call_2)
-
-            self.freqBox.setValue(int(qso[4]))
-
-            mode_text = cur.execute(f"""
-                SELECT mode
-                FROM modes
-                WHERE id = {qso[5]}""").fetchone()[0]
-            self.modeBox.setCurrentText(mode_text)
-
-            self.dateEdit.setDate(QDate.fromString(qso[1], "dd.MM.yyyy"))
-            self.startTimeEdit.setTime(QTime.fromString(qso[2], "HH:mm:ss"))
-            self.endTimeEdit.setTime(QTime.fromString(qso[3], "HH:mm:ss"))
-
-            # Запоминаем айдишник, включаем режим редактирования
-            self.edit_id = id_
-            self.edit_flag = True
-
     # Отработчик нажатий
     def keyPressEvent(self, event):
         quene = (self.callsignEdit_1, self.callsignEdit_2, self.RSTEdit_1, self.nameEdit_1,
@@ -409,122 +341,6 @@ class MyWidget(QMainWindow, Ui_MainWindow):
         # Если нажата кнопка Enter, то вносим запись
         elif event.key() in (Qt.Key_Return, Qt.Key_Enter):
             self.add_row()
-
-    # Обновление таблицы
-    def update_table(self):
-        cur = self.con.cursor()
-
-        # Получаем данные о связях
-        result = cur.execute("SELECT * FROM qsos").fetchall()
-
-        self.table.setRowCount(len(result))
-
-        # Вставляем в таблицу
-        for i, elem in enumerate(result):
-            for j, val in enumerate(elem):
-                # Если это позывной, то вместо id подставляем позывной
-                if j in (6, 7):
-                    val = cur.execute(f"""
-                        SELECT callsign FROM callsigns
-                        WHERE id = {val}""").fetchone()[0]
-                # Если это режим, то вместо id подставляем режим
-                elif j == 5:
-                    val = cur.execute(f"""
-                        SELECT mode FROM modes
-                        WHERE id = {val}""").fetchone()[0]
-                self.table.setItem(i, j, QTableWidgetItem(str(val)))
-
-        # Подтяшиваем под значения, опускаемся в самый низ и обновляем информацию
-        # о связях в статусбаре
-        self.table.resizeColumnsToContents()
-        self.table.scrollToBottom()
-        self.statusbar.showMessage(f"QSOs: {len(result)}")
-
-    # Экспорт в формат ADIF
-    def to_adif(self):
-        # Спрашиваем юзера куда сохранить
-        adif_name, choosen = QFileDialog.getSaveFileName(self, "Save ADIF", "", "ADIF (*.adi)")
-
-        # Если юзер согласился, то начинаем экспорт
-        if choosen:
-            operator = self.my_call
-            # Словарь диапозонов
-            band_dict = {(135, 138): "2200M", (1800, 2000): "160M", (3500, 3800): "80M",
-                         (7000, 7200): "40M", (10100, 10150): "30M", (14000, 14350): "20M",
-                         (18050, 18200): "17M", (21000, 21450): "15M", (24890, 24990): "12M",
-                         (28000, 29700): "10M", (144000, 146000): "2M", (430000, 440000): "432"}
-
-            # Заголовок для ADIF файла
-            header = "<PROGRAMID:18>R3R-126 SWL Logger\n"
-            header += f"<PROGRAMVERSION:{len(str(version))}>{version}\n"
-            header += "<ADIF_VER:5>3.0.4\n"
-            header += "<EOH>"
-
-            # Загружаем все связи
-            cur = self.con.cursor()
-            result = cur.execute("SELECT * FROM qsos").fetchall()
-
-            for i in result:
-                # Разбираем i
-                date = i[1]
-                date = date[-4:] + date[3:5] + date[:2]
-                time_start = i[2]
-                time_start = time_start[:2] + time_start[3:5] + time_start[6:8]
-                time_end = i[3]
-                time_end = time_end[:2] + time_end[3:5] + time_end[6:8]
-                freq = str(i[4])
-                band = ""
-                # Получаем диапозон из частоты
-                for j in band_dict:
-                    if j[0] <= int(freq) <= j[1]:
-                        band = band_dict[j]
-                if band == "":
-                    band = str(freq)[:-3]
-                mode = cur.execute(f"""
-                    SELECT mode FROM modes
-                    WHERE id = {i[5]}""").fetchone()[0]
-                call_1_info = cur.execute(f"""
-                    SELECT callsign, name, qth, locator
-                    FROM callsigns
-                    WHERE id = {i[6]}""").fetchone()
-                call_2_info = cur.execute(f"""
-                    SELECT callsign, name, qth, locator
-                    FROM callsigns
-                    WHERE id = {i[7]}""").fetchone()
-                callsign_1 = call_1_info[0]
-                callsign_2 = call_2_info[0]
-                RST_1 = str(i[8])
-                RST_2 = str(i[9])
-                name_1 = call_1_info[1]
-                name_2 = call_2_info[1]
-                QTH_1 = call_1_info[2]
-                QTH_2 = call_2_info[2]
-                loc_1 = call_1_info[3]
-                loc_2 = call_2_info[3]
-                comment_1 = i[10]
-                comment_2 = i[11]
-
-                # Добавляем связи в формате ADIF
-                if callsign_1 != "":
-                    header += f"\n<OPERATOR:{len(operator)}>{operator}<SWL:1>Y<CALL:{len(callsign_1)}>{callsign_1}"
-                    header += f"<QSO_DATE:8>{date}<TIME_ON:6>{time_start}<TIME_OFF:6>{time_end}<FREQ:{len(freq)}>{freq}"
-                    header += f"<BAND:{len(band)}>{band}<MODE:{len(mode)}>{mode}<RST_RCVD:{len(RST_2)}>{RST_2}"
-                    header += f"<RST_SENT:{len(RST_1)}>{RST_1}<NAME:{len(name_1)}>{name_1}<QTH:{len(QTH_1)}>{QTH_1}"
-                    header += f"<GRIDSQUARE:{len(loc_1)}>{loc_1}"
-                    header += f"<QSLMSG:{len(callsign_2) + len(comment_1) + 11}>You WKD {callsign_2} | {comment_1}<EOR>"
-
-                if callsign_2 != "":
-                    header += f"\n<OPERATOR:{len(operator)}>{operator}<SWL:1>Y<CALL:{len(callsign_2)}>{callsign_2}"
-                    header += f"<QSO_DATE:8>{date}<TIME_ON:6>{time_start}<TIME_OFF:6>{time_end}<FREQ:{len(freq)}>{freq}"
-                    header += f"<BAND:{len(band)}>{band}<MODE:{len(mode)}>{mode}<RST_RCVD:{len(RST_1)}>{RST_1}"
-                    header += f"<RST_SENT:{len(RST_2)}>{RST_2}<NAME:{len(name_2)}>{name_2}<QTH:{len(QTH_2)}>{QTH_2}"
-                    header += f"<GRIDSQUARE:{len(loc_2)}>{loc_2}"
-                    header += f"<QSLMSG:{len(callsign_1) + len(comment_2) + 11}>You WKD {callsign_1} | {comment_2}<EOR>"
-
-            # Сохраняем
-            with open(adif_name, "w") as f:
-                f.write(header)
-                f.close()
 
     # Меняем диапозон по нажатию ALT + B
     def change_band(self):
@@ -573,6 +389,11 @@ class MyWidget(QMainWindow, Ui_MainWindow):
         self.modeBox.setCurrentText(qso_buffer[-2])
         self.freqBox.setValue(qso_buffer[-1])
 
+MyWidget.to_adif = export.to_adif
+MyWidget.update_table = table.update_table
+MyWidget.contextMenuEvent = table.contextMenuEvent
+MyWidget.get_adif = export.get_adif
+MyWidget.to_eqsl = export.to_eqsl
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
